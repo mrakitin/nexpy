@@ -85,7 +85,6 @@ class ImportDialog(NXImportDialog):
         """Connect to the Tiled server and populate the top-level tree."""
         try:
             from tiled.client import from_uri
-            from tiled.client.context import CannotPrompt
         except ImportError:
             report_error("Import Tiled Dataset",
                          NeXusError(
@@ -104,20 +103,35 @@ class ImportDialog(NXImportDialog):
         QtWidgets.QApplication.processEvents()
 
         try:
-            self._catalog = from_uri(url, remember_me=True)
-        except CannotPrompt:
+            import tiled.client.context as _tiled_ctx
+            _orig_username = _tiled_ctx.username_input
+            _orig_password = _tiled_ctx.password_input
+
+            def _qt_username():
+                text, ok = QtWidgets.QInputDialog.getText(
+                    self, "Tiled Login", "Username:")
+                if not ok:
+                    raise NeXusError("Login cancelled")
+                return text
+
+            def _qt_password():
+                text, ok = QtWidgets.QInputDialog.getText(
+                    self, "Tiled Login", "Password:",
+                    QtWidgets.QLineEdit.EchoMode.Password)
+                if not ok:
+                    raise NeXusError("Login cancelled")
+                return text
+
+            _tiled_ctx.username_input = _qt_username
+            _tiled_ctx.password_input = _qt_password
+            try:
+                self._catalog = from_uri(url, remember_me=True)
+            finally:
+                _tiled_ctx.username_input = _orig_username
+                _tiled_ctx.password_input = _orig_password
+        except NeXusError as e:
             self.status_label.setText("")
-            report_error(
-                "Import Tiled Dataset",
-                NeXusError(
-                    "Authentication required.\n\n"
-                    "NeXpy cannot prompt for credentials inside the GUI.\n"
-                    "Please open a terminal and run:\n\n"
-                    f"    tiled login {url}\n\n"
-                    "Then click Connect again — the cached token will be "
-                    "used automatically."
-                )
-            )
+            report_error("Import Tiled Dataset", e)
             return
         except Exception as e:
             self.status_label.setText("")
