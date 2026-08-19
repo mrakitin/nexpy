@@ -12,19 +12,18 @@ Module to browse and import datasets from a Tiled server into NeXpy.
 The default server is https://tiled.nsls2.bnl.gov/ but any Tiled URL can be
 used.  Authentication uses the normal Tiled client flow:
 
-* If the user has previously run ``tiled login <url>`` (or connected from
-  another Tiled client), the cached token is reused automatically.
-* If no cached token exists (or it has expired) and the session is
-  non-interactive (headless GUI context), a ``CannotPrompt`` error is caught
-  and the user is shown instructions to authenticate via the terminal first.
+* If the user has previously logged in (``tiled login <url>``) the cached
+  token is reused automatically.
+* Otherwise Qt ``QInputDialog`` popups collect credentials — the terminal is
+  never blocked.
 
-Tree browsing is lazy — container children are fetched only when a node is
-expanded, so opening the dialog does not fetch the full catalog.
+Tree browsing is fully lazy and paginated (PAGE_SIZE items per request).
+A "Load N more…" placeholder row appears at the bottom of any container that
+has more entries than the current page.
 """
 
 import numpy as np
-from nexusformat.nexus import (NeXusError, NXcollection, NXdata, NXfield,
-                               NXgroup)
+from nexusformat.nexus import NeXusError, NXcollection, NXdata, NXfield
 
 from nexpy.gui.importdialog import NXImportDialog
 from nexpy.gui.pyqt import QtCore, QtWidgets
@@ -34,6 +33,10 @@ from nexpy.gui.widgets import NXLabel, NXLineEdit, NXPushButton
 filetype = "Tiled Dataset"
 
 DEFAULT_URL = "https://tiled.nsls2.bnl.gov/"
+PAGE_SIZE = 100
+
+# Sentinel stored in UserRole to mark a "Load more" row
+_LOAD_MORE = "__load_more__"
 
 
 class ImportDialog(NXImportDialog):
@@ -42,8 +45,7 @@ class ImportDialog(NXImportDialog):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
 
-        self._catalog = None   # root tiled client node after connect
-        self._node_map = {}    # maps QTreeWidgetItem id → tiled path list
+        self._catalog = None  # root tiled client node after connect
 
         # --- URL row ---
         url_label = NXLabel("Server URL")
@@ -62,6 +64,7 @@ class ImportDialog(NXImportDialog):
         self.tree_widget.setMinimumWidth(500)
         self.tree_widget.setMinimumHeight(300)
         self.tree_widget.itemExpanded.connect(self._on_expand)
+        self.tree_widget.itemClicked.connect(self._on_item_click)
         self.tree_widget.itemSelectionChanged.connect(self._on_select)
 
         # --- Status label ---
@@ -78,11 +81,11 @@ class ImportDialog(NXImportDialog):
         self.set_title("Import Tiled Dataset")
 
     # ------------------------------------------------------------------
-    # Connection helpers
+    # Connection
     # ------------------------------------------------------------------
 
     def _connect(self):
-        """Connect to the Tiled server and populate the top-level tree."""
+        """Connect to the Tiled server and show the top-level catalog."""
         try:
             from tiled.client import from_uri
         except ImportError:
@@ -139,15 +142,12 @@ class ImportDialog(NXImportDialog):
             return
 
         self.tree_widget.clear()
-        self._node_map.clear()
-
-        # Populate top-level entries
-        self._populate_children(self.tree_widget.invisibleRootItem(),
-                                self._catalog, path=[])
+        self._append_page(self.tree_widget.invisibleRootItem(),
+                          self._catalog, path=[], offset=0)
         self.status_label.setText(f"Connected to {url}")
 
     # ------------------------------------------------------------------
-    # Tree population (lazy)
+    # Tree helpers
     # ------------------------------------------------------------------
 
     def _node_at_path(self, path):
@@ -157,69 +157,101 @@ class ImportDialog(NXImportDialog):
             node = node[key]
         return node
 
-    def _populate_children(self, parent_item, node, path):
-        """
-        Add immediate children of *node* as child items of *parent_item*.
+    def _is_container(self, node):
+        """Return True if *node* is a browsable container."""
+        return hasattr(node, '__iter__') and not hasattr(node, 'read')
 
-        Containers get a dummy child so the expand arrow is shown; the real
-        children are loaded in ``_on_expand``.
+    def _append_page(self, parent_item, node, path, offset):
+        """
+        Append one page (PAGE_SIZE keys starting at *offset*) of *node*'s
+        children to *parent_item*.
+
+        After the items a "Load N more…" row is added when there are
+        additional entries beyond this page.
         """
         try:
-            keys = list(node)
+            keys = node.keys()[offset:offset + PAGE_SIZE]
         except Exception:
-            return
+            try:
+                # Fallback for containers without sliceable keys()
+                keys = list(node)[offset:offset + PAGE_SIZE]
+            except Exception:
+                return
 
         for key in keys:
             child_path = path + [key]
             item = QtWidgets.QTreeWidgetItem(parent_item, [str(key)])
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, child_path)
+            # Add a placeholder so the expand arrow appears; we'll load
+            # the real children lazily in _on_expand.
+            placeholder = QtWidgets.QTreeWidgetItem(item, ["Loading…"])
+            placeholder.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
 
-            # Determine whether this child is itself a container
+        # "Load more" row if there are additional keys
+        next_offset = offset + len(keys)
+        if len(keys) == PAGE_SIZE:
             try:
-                child = node[key]
-                is_container = hasattr(child, '__iter__') and not hasattr(
-                    child, 'read')
-                if is_container:
-                    # Add a placeholder so the expand arrow appears
-                    _placeholder = QtWidgets.QTreeWidgetItem(item,
-                                                             ["Loading…"])
-                    _placeholder.setData(
-                        0, QtCore.Qt.ItemDataRole.UserRole, None)
+                total = len(node)
             except Exception:
-                pass
+                total = None
+            if total is None or next_offset < total:
+                remaining = (f"{total - next_offset} remaining"
+                             if total is not None else "more")
+                load_item = QtWidgets.QTreeWidgetItem(
+                    parent_item,
+                    [f"⬇  Load {PAGE_SIZE} more  ({remaining})…"])
+                load_item.setData(
+                    0, QtCore.Qt.ItemDataRole.UserRole,
+                    {'marker': _LOAD_MORE, 'path': path, 'offset': next_offset})
+                load_item.setForeground(
+                    0, QtWidgets.QApplication.palette().link())
+
+    # ------------------------------------------------------------------
+    # Signals
+    # ------------------------------------------------------------------
 
     def _on_expand(self, item):
-        """Lazily load children when a container node is expanded."""
-        path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if path is None:
+        """Lazily load children when a node is first expanded."""
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        # Only act on normal path nodes that still show a placeholder
+        if not isinstance(data, list):
             return
+        if item.childCount() != 1:
+            return
+        child0 = item.child(0)
+        if child0.data(0, QtCore.Qt.ItemDataRole.UserRole) is not None:
+            return  # already loaded
 
-        # Check if already loaded (more than one placeholder or real child)
-        if item.childCount() == 1:
-            child0 = item.child(0)
-            placeholder_path = child0.data(0, QtCore.Qt.ItemDataRole.UserRole)
-            if placeholder_path is None:
-                # Remove placeholder and load real children
-                item.removeChild(child0)
-                try:
-                    node = self._node_at_path(path)
-                    self._populate_children(item, node, path)
-                except Exception as e:
-                    err = QtWidgets.QTreeWidgetItem(item,
-                                                    [f"Error: {e}"])
+        item.removeChild(child0)
+        try:
+            node = self._node_at_path(data)
+            if self._is_container(node):
+                self._append_page(item, node, data, offset=0)
+            # Leaf nodes simply show no children (the expand arrow is removed)
+        except Exception as e:
+            QtWidgets.QTreeWidgetItem(item, [f"Error: {e}"])
 
-    # ------------------------------------------------------------------
-    # Selection
-    # ------------------------------------------------------------------
+    def _on_item_click(self, item, _column):
+        """Handle clicks on 'Load more' rows."""
+        data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict) or data.get('marker') != _LOAD_MORE:
+            return
+        parent = item.parent() or self.tree_widget.invisibleRootItem()
+        parent.removeChild(item)
+        try:
+            node = self._node_at_path(data['path'])
+            self._append_page(parent, node, data['path'], data['offset'])
+        except Exception as e:
+            QtWidgets.QTreeWidgetItem(parent, [f"Error: {e}"])
 
     def _on_select(self):
-        """Update the import name when the user selects a tree item."""
+        """Update the import name field when the user selects a node."""
         items = self.tree_widget.selectedItems()
         if not items:
             return
-        path = items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if path:
-            self.import_name = "/".join(str(p) for p in path)
+        data = items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if isinstance(data, list) and data:
+            self.import_name = "/".join(str(p) for p in data)
 
     # ------------------------------------------------------------------
     # Data conversion
@@ -230,26 +262,20 @@ class ImportDialog(NXImportDialog):
         items = self.tree_widget.selectedItems()
         if not items:
             raise NeXusError("No dataset selected")
-
-        path = items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if not path:
+        data = items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if not isinstance(data, list) or not data:
             raise NeXusError("No dataset selected")
-
         if self._catalog is None:
             raise NeXusError("Not connected to a Tiled server")
-
         try:
-            node = self._node_at_path(path)
+            node = self._node_at_path(data)
         except Exception as e:
             raise NeXusError(f"Cannot access node: {e}")
-
-        return self._node_to_nexus(node, name=str(path[-1]))
+        return self._node_to_nexus(node, name=str(data[-1]))
 
     def _node_to_nexus(self, node, name="data"):
         """Recursively convert a Tiled node to a NeXus object."""
-        from tiled.client.array import ArrayClient
         from tiled.client.container import Container
-
         if isinstance(node, Container):
             group = NXcollection()
             self._attach_metadata(group, node)
@@ -261,28 +287,24 @@ class ImportDialog(NXImportDialog):
                     pass
             return group
 
-        # Leaf node — try to read as array
         try:
             data = node.read()
         except Exception as e:
             raise NeXusError(f"Cannot read data: {e}")
 
-        # Pandas DataFrame → multiple NXfields in an NXcollection
         try:
             import pandas as pd
             if isinstance(data, pd.DataFrame):
                 group = NXcollection()
                 self._attach_metadata(group, node)
                 for col in data.columns:
-                    group[str(col)] = NXfield(data[col].values,
-                                              name=str(col))
+                    group[str(col)] = NXfield(data[col].values, name=str(col))
                 return group
         except ImportError:
             pass
 
         arr = np.asarray(data)
-        field = NXfield(arr, name=name)
-        result = NXdata(field)
+        result = NXdata(NXfield(arr, name=name))
         self._attach_metadata(result, node)
         return result
 
@@ -297,3 +319,6 @@ class ImportDialog(NXImportDialog):
                     pass
         except Exception:
             pass
+
+
+import numpy as np
