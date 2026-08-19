@@ -27,7 +27,7 @@ from nexusformat.nexus import NeXusError, NXcollection, NXdata, NXfield
 
 from nexpy.gui.importdialog import NXImportDialog
 from nexpy.gui.pyqt import QtCore, QtWidgets
-from nexpy.gui.utils import report_error
+from nexpy.gui.utils import natural_sort, report_error
 from nexpy.gui.widgets import NXLabel, NXLineEdit, NXPushButton
 
 filetype = "Tiled Dataset"
@@ -178,7 +178,7 @@ class ImportDialog(NXImportDialog):
             except Exception:
                 return
 
-        for key in keys:
+        for key in sorted(keys, key=lambda k: natural_sort(str(k))):
             child_path = path + [key]
             item = QtWidgets.QTreeWidgetItem(parent_item, [str(key)])
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, child_path)
