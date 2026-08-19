@@ -158,8 +158,34 @@ class ImportDialog(NXImportDialog):
         return node
 
     def _is_container(self, node):
-        """Return True if *node* is a browsable container."""
-        return hasattr(node, '__iter__') and not hasattr(node, 'read')
+        """Return True if *node* is a browsable container (including xarray)."""
+        from tiled.client.container import Container
+        return isinstance(node, Container)
+
+    @staticmethod
+    def _metadata_tooltip(node):
+        """Return a short metadata string suitable for a tree tooltip."""
+        try:
+            meta = node.metadata
+            if not meta:
+                return ""
+            import json
+            return json.dumps(dict(meta), indent=2, default=str)
+        except Exception:
+            return ""
+
+    def _make_item(self, parent, label, path, node=None):
+        """Create a tree item with tooltip and optional expand placeholder."""
+        item = QtWidgets.QTreeWidgetItem(parent, [str(label)])
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, path)
+        if node is not None:
+            tip = self._metadata_tooltip(node)
+            if tip:
+                item.setToolTip(0, tip)
+            if self._is_container(node):
+                placeholder = QtWidgets.QTreeWidgetItem(item, ["Loading…"])
+                placeholder.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
+        return item
 
     def _append_page(self, parent_item, node, path, offset):
         """
@@ -170,26 +196,20 @@ class ImportDialog(NXImportDialog):
         additional entries beyond this page.
         """
         try:
-            keys = node.keys()[offset:offset + PAGE_SIZE]
+            page = node.items()[offset:offset + PAGE_SIZE]
         except Exception:
             try:
-                # Fallback for containers without sliceable keys()
-                keys = list(node)[offset:offset + PAGE_SIZE]
+                page = list(node.items())[offset:offset + PAGE_SIZE]
             except Exception:
                 return
 
-        for key in sorted(keys, key=lambda k: natural_sort(str(k))):
+        for key, child in sorted(page, key=lambda kv: natural_sort(str(kv[0]))):
             child_path = path + [key]
-            item = QtWidgets.QTreeWidgetItem(parent_item, [str(key)])
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, child_path)
-            # Add a placeholder so the expand arrow appears; we'll load
-            # the real children lazily in _on_expand.
-            placeholder = QtWidgets.QTreeWidgetItem(item, ["Loading…"])
-            placeholder.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
+            self._make_item(parent_item, key, child_path, node=child)
 
         # "Load more" row if there are additional keys
-        next_offset = offset + len(keys)
-        if len(keys) == PAGE_SIZE:
+        next_offset = offset + len(page)
+        if len(page) == PAGE_SIZE:
             try:
                 total = len(node)
             except Exception:
@@ -225,9 +245,15 @@ class ImportDialog(NXImportDialog):
         item.removeChild(child0)
         try:
             node = self._node_at_path(data)
+            # Ensure tooltip is set (may be missing if metadata wasn't
+            # available at item-creation time)
+            if not item.toolTip(0):
+                tip = self._metadata_tooltip(node)
+                if tip:
+                    item.setToolTip(0, tip)
             if self._is_container(node):
                 self._append_page(item, node, data, offset=0)
-            # Leaf nodes simply show no children (the expand arrow is removed)
+            # Leaf nodes show no children (expand arrow disappears)
         except Exception as e:
             QtWidgets.QTreeWidgetItem(item, [f"Error: {e}"])
 
@@ -245,13 +271,15 @@ class ImportDialog(NXImportDialog):
             QtWidgets.QTreeWidgetItem(parent, [f"Error: {e}"])
 
     def _on_select(self):
-        """Update the import name field when the user selects a node."""
+        """Update the import name field and status when the user selects a node."""
         items = self.tree_widget.selectedItems()
         if not items:
             return
         data = items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
         if isinstance(data, list) and data:
             self.import_name = "/".join(str(p) for p in data)
+            tip = items[0].toolTip(0)
+            self.status_label.setText(tip[:200] if tip else "")
 
     # ------------------------------------------------------------------
     # Data conversion
