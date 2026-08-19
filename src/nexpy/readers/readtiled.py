@@ -297,22 +297,27 @@ class ImportDialog(NXImportDialog):
             raise NeXusError("Not connected to a Tiled server")
         try:
             node = self._node_at_path(data)
+            return self._node_to_nexus(node, name=str(data[-1]))
+        except NeXusError:
+            raise
         except Exception as e:
-            raise NeXusError(f"Cannot access node: {e}")
-        return self._node_to_nexus(node, name=str(data[-1]))
+            raise NeXusError(str(e)) from e
 
     def _node_to_nexus(self, node, name="data"):
         """Recursively convert a Tiled node to a NeXus object."""
         from tiled.client.container import Container
         if isinstance(node, Container):
-            group = NXcollection()
+            group = NXcollection(name=name)
             self._attach_metadata(group, node)
             for key in node:
                 try:
-                    group[str(key)] = self._node_to_nexus(node[key],
-                                                          name=str(key))
-                except Exception:
-                    pass
+                    child = node[key]
+                    group[str(key)] = self._node_to_nexus(child, name=str(key))
+                except NeXusError:
+                    raise
+                except Exception as e:
+                    import logging
+                    logging.warning(f"Tiled: skipping {key!r}: {e}")
             return group
 
         try:
