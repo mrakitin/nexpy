@@ -1,0 +1,45 @@
+[project]
+name = "nexpy"
+description = "Python GUI to analyze NeXus data"
+version = "0.1.0"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+
+[dependencies]
+python = ">=3.9"
+ansi2html = "*"
+darkdetect = "*"
+dateparser = "*"
+fabio = "*"
+h5py = "*"
+ipython = "*"
+lmfit = "*"
+matplotlib = "*"
+mplcursors = "*"
+nexusformat = ">=2.0.3"
+numpy = "*"
+packaging = "*"
+pillow = "*"
+pygments = "*"
+pylatexenc = "*"
+qtconsole = "*"
+qtpy = "*"
+scipy = "*"
+setuptools = ">=64"
+setuptools-scm = ">=8"
+
+[pypi-dependencies]
+nexpy = { path = ".", editable = true }
+
+[feature.pyqt6.dependencies]
+pyqt6 = ">=6.2"
+
+[feature.tiled.dependencies]
+tiled = "*"
+
+[environments]
+default = { features = ["pyqt6"], solve-group = "default" }
+tiled = { features = ["pyqt6", "tiled"], solve-group = "default" }
+
+[tasks]
+nexpy = "nexpy"

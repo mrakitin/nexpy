@@ -23,3 +23,4 @@ def test_reader_import():
     import nexpy.readers.readstack
     import nexpy.readers.readtiff
     import nexpy.readers.readtxt
+    import nexpy.readers.readtiled

@@ -62,6 +62,7 @@ pyqt6 = ["pyqt6>=6.2"]
 pyside2 = ["pyside2>=5.12"]
 pyside6 = ["pyside6>=6.2"]
 qt = ["nexpy[pyqt5]"]
+tiled = ["tiled"]
 
 [dependency-groups]
 dev = ["pytest"]
