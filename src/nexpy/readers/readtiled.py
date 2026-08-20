@@ -281,6 +281,23 @@ class ImportDialog(NXImportDialog):
             tip = items[0].toolTip(0)
             self.status_label.setText(tip[:200] if tip else "")
 
+    def accept(self):
+        """
+        Override accept to force full population of the NeXpy tree.
+
+        NXtree.set_changed() only syncs one level of children per call
+        because it snapshots existing items before iterating. In-memory
+        nodes never re-trigger set_changed() the way file-backed nodes do
+        (those call set_changed() lazily when .entries is first accessed).
+        Calling set_changed() N times covers N additional levels.
+        """
+        super().accept()
+        for _ in range(8):
+            try:
+                self.mainwindow.tree.set_changed()
+            except Exception:
+                break
+
     # ------------------------------------------------------------------
     # Data conversion
     # ------------------------------------------------------------------
