@@ -369,6 +369,3 @@ class ImportDialog(NXImportDialog):
                     pass
         except Exception:
             pass
-
-
-import numpy as np
