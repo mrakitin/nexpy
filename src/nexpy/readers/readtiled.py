@@ -25,6 +25,11 @@ has more entries than the current page.
 import numpy as np
 from nexusformat.nexus import NeXusError, NXcollection, NXdata, NXfield
 
+try:
+    from tiled.client.container import Container as _TiledContainer
+except ImportError:
+    _TiledContainer = None
+
 from nexpy.gui.importdialog import NXImportDialog
 from nexpy.gui.pyqt import QtCore, QtWidgets
 from nexpy.gui.utils import natural_sort, report_error
@@ -159,8 +164,7 @@ class ImportDialog(NXImportDialog):
 
     def _is_container(self, node):
         """Return True if *node* is a browsable container (including xarray)."""
-        from tiled.client.container import Container
-        return isinstance(node, Container)
+        return _TiledContainer is not None and isinstance(node, _TiledContainer)
 
     @staticmethod
     def _metadata_tooltip(node):
@@ -322,8 +326,7 @@ class ImportDialog(NXImportDialog):
 
     def _node_to_nexus(self, node, name="data"):
         """Recursively convert a Tiled node to a NeXus object."""
-        from tiled.client.container import Container
-        if isinstance(node, Container):
+        if _TiledContainer is not None and isinstance(node, _TiledContainer):
             group = NXcollection(name=name)
             self._attach_metadata(group, node)
             for key in node:
